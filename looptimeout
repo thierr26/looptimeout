@@ -1,0 +1,280 @@
+#!/bin/sh
+
+MAX_LIMIT=10000;
+
+# -----------------------------------------------------------------------------
+
+# Prepends the argument with "FATAL ERROR: " and echoes it to standard error,
+# then terminates the script with exit status 1. If no argument or empty
+# argument given, echoes "FATAL_ERROR" to standard error then terminates the
+# script with exit status 1.
+#
+# ARGUMENT:
+# $1: Any string.
+fatal() {
+
+    local FATAL_ERROR="FATAL ERROR";
+    if [ $# -gt 0 ] && [ -n "$1" ]; then
+        echo "$FATAL_ERROR: $1">&2;
+    else
+        echo "$FATAL_ERROR">&2;
+    fi;
+    echo "Use \"$SCRIPT_PATH --help\" for documentation">&2;
+
+    exit 1;
+}
+
+# -----------------------------------------------------------------------------
+
+# Echoes the first argument being an executable command. Echoes nothing if none
+# of the arguments is an executable command.
+#
+# ARGUMENTS:
+# Any strings.
+echo_cmd() {
+    until [ $# -eq 0 ] || command -v "$1"; do
+        shift;
+    done;
+}
+
+# -----------------------------------------------------------------------------
+
+# Echoes the first argument being an executable command and returns with exit
+# status 0. If none of the arguments is an executable command, then terminates
+# the script with a call to function fatal and thus exit status 1.
+#
+# ARGUMENTS:
+# Any strings.
+echo_cmd_fatal() {
+
+    local LAST_CMD;
+    until [ $# -eq 0 ] || command -v "$1"; do
+        LAST_CMD="$1";
+        shift;
+    done;
+
+    if [ $# -eq 0 ]; then
+        if [ -n "$LAST_CMD" ]; then
+            fatal "$LAST_CMD does not seem to be installed.";
+        else
+            fatal;
+        fi;
+    fi;
+}
+
+# -----------------------------------------------------------------------------
+
+# Prints the documentation for the script to the standard output.
+#
+# ARGUMENT
+# $1: Script name.
+documentation() {
+
+    local SCRIPT_NAME="$1";
+    local FMT="fmt";
+    local CMD=$(echo_cmd_fatal "$FMT" cat);
+    if [ ${CMD##*/} = "$FMT" ] && [ -n "$(echo_cmd tput)" ]; then
+        CMD="fmt --width=$(tput cols)";
+    fi;
+
+    $CMD <<EOF
+Usage:
+
+    $SCRIPT_NAME DURATION FILE LIMIT COMMAND [ARG ...]
+
+    $SCRIPT_NAME -h|--help
+
+Description:
+
+    Run command "timeout DURATION COMMAND ARG > NUMBERED_FILE" in a loop.
+
+    NUMBERED_FILE is argument FILE suffixed with loop iteration number (five
+    digits, left padded with zeros). Iteration number starts at 0 and is
+    modulo $MAX_LIMIT.
+
+    LIMIT is the maximum number of generated files. If it's lower than 1,
+    then it is substituted with 1. If it's greater than $MAX_LIMIT then it is
+    substituted with $MAX_LIMIT. If the maximum number of generated files is
+    reached, then timeout deletes the oldest one on each loop iteration.
+
+Options:
+
+    -h, --help
+        Display this documentation and exit.
+EOF
+}
+
+# -----------------------------------------------------------------------------
+
+# Returns 0 if the argument starts with "-". Returns 1 otherwise.
+#
+# ARGUMENT
+# $1: Any string.
+has_hyphen_leader() {
+    if [ -n "$1" ] && [ -z "${1%%-*}" ]; then
+        return 0;
+    else
+        return 1;
+    fi;
+}
+
+# -----------------------------------------------------------------------------
+
+# Returns 0 if the argument starts with "--". Returns 1 otherwise.
+#
+# ARGUMENT
+# $1: Any string.
+has_double_hyphen_leader() {
+    if [ -n "$1" ] && [ -z ${1%%--*} ]; then
+        return 0;
+    else
+        return 1;
+    fi;
+}
+
+# -----------------------------------------------------------------------------
+
+# Is supposed to be called with all the arguments to the current script.
+#
+# Affects the following variables:
+#   HELP_OPT: true if the user has requested the printing of the script
+#             documentation, false otherwise.
+#   DURATION: First argument to the script.
+#   FILE:     Second argument to the script.
+#   LIMIT:    Third argument to the script.
+#
+# An unrecognized option or a missing or empty argument will cause the script
+# to terminate with a call to the fatal function and thus exit status 1.
+#
+# ARGUMENTS
+# All the arguments to the current script.
+process_args() {
+
+    HELP_OPT=false;
+
+    # Process the options.
+    local OPT_STRING;
+    local N;
+    local K;
+    local OPT;
+    while [ $# -gt 0 ] && has_hyphen_leader "$1"; do
+
+        OPT_STRING=${1#?}; # If $1 is "-abc" then $OPT_STRING is "abc".
+                           # If $1 is "--force" then $OPT_STRING is "-force".
+
+        if has_double_hyphen_leader "$1"; then
+            N=1;
+        else
+            N=${#OPT_STRING};
+        fi;
+
+        for K in $(seq 1 $N); do
+            if [ $N -gt 1 ]; then
+                OPT=${OPT_STRING%${OPT_STRING#?}}; # If $OPT_STRING is "abc" at
+                                                   # the beginning of the loop,
+                                                   # then $OPT is "a",
+                                                   # then "b", then "c".
+            else
+                OPT="$OPT_STRING";
+            fi;
+
+            case "-$OPT" in
+                -h|--help) HELP_OPT=true;;
+                *) fatal "Unrecognized option: -$OPT"
+            esac;
+
+            if [ $N -gt 1 ]; then
+                OPT_STRING=${OPT_STRING#?};
+            fi;
+        done;
+
+        shift;
+    done;
+
+    # Process the other arguments.
+    if [ $# -lt 4 ] && ! $HELP_OPT; then
+        fatal "Missing argument(s)."
+    fi;
+    if ! $HELP_OPT; then
+        if [ -z "$1" ]; then
+            fatal "The first argument must be a duration."
+        fi;
+        if [ -z "$2" ]; then
+            fatal "The second argument must be a valid file name."
+        fi;
+        if [ -z "$(echo "$3"|grep "\-\?[0-9]\+")" ]; then
+            fatal "The third argument must be an integer number."
+        fi;
+        DURATION="$1";
+        FILE="$2";
+        LIMIT="$3";
+        if [ $LIMIT -lt 1 ]; then
+            LIMIT=1;
+        elif [ $LIMIT -gt $MAX_LIMIT ]; then
+            LIMIT=$MAX_LIMIT;
+        fi;
+    fi;
+}
+
+# -----------------------------------------------------------------------------
+
+# Checks that the external programs needed by the script (except for
+# documentation) are available.
+dependency_check() {
+    echo_cmd_fatal timeout>/dev/null;
+    echo_cmd_fatal grep>/dev/null;
+    echo_cmd_fatal rm>/dev/null;
+}
+
+# -----------------------------------------------------------------------------
+
+set -o nounset # Causes the script to terminate whenever an uninitialized
+               # variable is used.
+
+set -o errexit # Causes the script to terminate whenever a statement returns a
+               # non-true value.
+
+# Get the path to the script.
+SCRIPT_PATH="$0";
+
+# Get the base name of the script.
+SCRIPT_BASE_NAME=$(basename "$SCRIPT_PATH");
+
+process_args "$@";
+
+if $HELP_OPT; then
+    documentation $SCRIPT_BASE_NAME;
+else
+    shift 3;
+    dependency_check;
+
+    K=0;
+    N=0;
+    OLDEST=0;
+
+    while :; do
+
+        if [ $N -eq $LIMIT ]; then
+            rm "${FILE}_$(printf "%04d" $OLDEST)";
+            if [ $OLDEST -lt $(($MAX_LIMIT - 1)) ]; then
+                OLDEST=$(($OLDEST + 1));
+            else
+                OLDEST=0;
+            fi;
+        else
+            N=$(($N + 1));
+        fi;
+
+        set +o errexit
+        timeout "$DURATION" $* > "${FILE}_$(printf "%04d" $K)";
+        set -o errexit
+
+        if [ $K -lt $(($MAX_LIMIT - 1)) ]; then
+            K=$(($K + 1));
+        else
+            K=0;
+        fi;
+
+    done;
+
+fi;
